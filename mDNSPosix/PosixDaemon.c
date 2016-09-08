@@ -193,7 +193,6 @@ int main(int argc, char **argv)
 
     Reconfigure(&mDNSStorage);
 
-#if 0
     // Now that we're finished with anything privileged, switch over to running as "nobody"
     if (mStatus_NoError == err)
     {
@@ -203,7 +202,6 @@ int main(int argc, char **argv)
         else
             LogMsg("WARNING: mdnsd continuing as root because user \"nobody\" does not exist");
     }
-#endif
 
     if (mStatus_NoError == err)
         err = MainLoop(&mDNSStorage);
