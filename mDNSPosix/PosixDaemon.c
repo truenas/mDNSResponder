@@ -37,6 +37,7 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/types.h>
+#include <sys/param.h>
 
 #if __APPLE__
 #undef daemon
@@ -59,14 +60,22 @@ static mDNS_PlatformSupport PlatformStorage;
 
 mDNSlocal void mDNS_StatusCallback(mDNS *const m, mStatus result)
 {
-    (void)m; // Unused
+    char hostname[MAXHOSTNAMELEN];
+    char newhostname[MAXHOSTNAMELEN];
+    char hostlabel[MAX_ESCAPED_DOMAIN_LABEL + 1];
+
     if (result == mStatus_NoError)
     {
-        // On successful registration of dot-local mDNS host name, daemon may want to check if
-        // any name conflict and automatic renaming took place, and if so, record the newly negotiated
-        // name in persistent storage for next time. It should also inform the user of the name change.
-        // On Mac OS X we store the current dot-local mDNS host name in the SCPreferences store,
-        // and notify the user with a CFUserNotification.
+	ConvertDomainLabelToCString_unescaped(&m->hostlabel, hostlabel);
+	snprintf(newhostname, sizeof(newhostname), "%s.local", hostlabel);
+	gethostname(hostname, sizeof(hostname));
+
+	if (strcasecmp(hostname, newhostname) != 0)
+	{
+	    if (sethostname(newhostname, strlen(newhostname)) != 0)
+	        LogMsg("Cannot change system hostname to %s: %s",
+	               newhostname, strerror(errno));
+	}
     }
     else if (result == mStatus_ConfigChanged)
     {
@@ -184,6 +193,7 @@ int main(int argc, char **argv)
 
     Reconfigure(&mDNSStorage);
 
+#if 0
     // Now that we're finished with anything privileged, switch over to running as "nobody"
     if (mStatus_NoError == err)
     {
@@ -193,6 +203,7 @@ int main(int argc, char **argv)
         else
             LogMsg("WARNING: mdnsd continuing as root because user \"nobody\" does not exist");
     }
+#endif
 
     if (mStatus_NoError == err)
         err = MainLoop(&mDNSStorage);
