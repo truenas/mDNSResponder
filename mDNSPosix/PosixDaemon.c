@@ -70,6 +70,10 @@ mDNSlocal void mDNS_StatusCallback(mDNS *const m, mStatus result)
 	snprintf(newhostname, sizeof(newhostname), "%s.local", hostlabel);
 	gethostname(hostname, sizeof(hostname));
 
+        if (strcasecmp(&hostname[strlen(hostname) - strlen(".local")],
+	    ".local") != 0)
+		return;
+
 	if (strcasecmp(hostname, newhostname) != 0)
 	{
 	    if (sethostname(newhostname, strlen(newhostname)) != 0)
