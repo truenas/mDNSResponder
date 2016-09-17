@@ -66,20 +66,20 @@ mDNSlocal void mDNS_StatusCallback(mDNS *const m, mStatus result)
 
     if (result == mStatus_NoError)
     {
-	ConvertDomainLabelToCString_unescaped(&m->hostlabel, hostlabel);
-	snprintf(newhostname, sizeof(newhostname), "%s.local", hostlabel);
-	gethostname(hostname, sizeof(hostname));
+        ConvertDomainLabelToCString_unescaped(&m->hostlabel, hostlabel);
+        snprintf(newhostname, sizeof(newhostname), "%s.local", hostlabel);
+        gethostname(hostname, sizeof(hostname));
 
         if (strcasecmp(&hostname[strlen(hostname) - strlen(".local")],
-	    ".local") != 0)
-		return;
+                       ".local") != 0)
+            return;
 
-	if (strcasecmp(hostname, newhostname) != 0)
-	{
-	    if (sethostname(newhostname, strlen(newhostname)) != 0)
-	        LogMsg("Cannot change system hostname to %s: %s",
-	               newhostname, strerror(errno));
-	}
+        if (strcasecmp(hostname, newhostname) != 0)
+        {
+            if (sethostname(newhostname, strlen(newhostname)) != 0)
+                LogMsg("Cannot change system hostname to %s: %s",
+                       newhostname, strerror(errno));
+        }
     }
     else if (result == mStatus_ConfigChanged)
     {
