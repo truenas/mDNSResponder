@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -14,8 +13,6 @@ extern int _nss_mdns_gethostbyname2_r(const char *, int,
 		struct hostent *, char *, size_t, int *, int *);
 extern int _nss_mdns_gethostbyaddr_r(const void *, socklen_t, int,
 		struct hostent *, char *, size_t, int *, int *);
-
-extern int mdns_getaddrinfo(const char *, struct addrinfo *, struct addrinfo **);
 
 static NSS_METHOD_PROTOTYPE(__nss_compat_gethostbyname2_r);
 static NSS_METHOD_PROTOTYPE(__nss_compat_gethostbyaddr_r);
@@ -117,8 +114,11 @@ aiforaf(const char *name, int af, struct addrinfo *pai, struct addrinfo **aip)
 			       addrstr, sizeof(addrstr)))
 			continue;
 		hints = *pai;
+<<<<<<< HEAD
 		hints.ai_addrlen = host.h_length;
 		hints.ai_addr = (void*)addrp;
+=======
+>>>>>>> 38979d8... Import patches from mDNSResponder_nss port.
 		hints.ai_flags = AI_NUMERICHOST;
 		hints.ai_family = af;
 		if (getaddrinfo(addrstr, NULL, &hints, &res0))
@@ -132,7 +132,10 @@ aiforaf(const char *name, int af, struct addrinfo *pai, struct addrinfo **aip)
 	}
 }
 
+<<<<<<< HEAD
 #if 0
+=======
+>>>>>>> 38979d8... Import patches from mDNSResponder_nss port.
 static int
 __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 {
@@ -159,6 +162,7 @@ __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 
 	return NS_SUCCESS;
 }
+<<<<<<< HEAD
 #else
 static int
 __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
@@ -178,4 +182,6 @@ __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 	return NS_SUCCESS;
 }
 #endif
+=======
+>>>>>>> 38979d8... Import patches from mDNSResponder_nss port.
 
