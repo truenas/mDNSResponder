@@ -95,71 +95,6 @@ __nss_compat_gethostbyaddr_r(void *retval, void *mdata, va_list ap)
 	return s;
 } 
 
-static void
-aiforaf(const char *name, int af, struct addrinfo *pai, struct addrinfo **aip)
-{
-	int s;
-	struct hostent host;
-	char hostbuf[8*1024];
-	int err, herr;
-	char **addrp;
-	char addrstr[INET6_ADDRSTRLEN];
-	struct addrinfo hints, *res0, *res;
-
-	s = _nss_mdns_gethostbyname2_r(name, af, &host, hostbuf, sizeof(hostbuf),
-			&err, &herr);
-	if (s != NS_SUCCESS)
-		return;
-
-	for (addrp = host.h_addr_list; *addrp; addrp++) {
-		/* XXX this sucks, but get_ai is not public */
-		if (!inet_ntop(host.h_addrtype, *addrp,
-			       addrstr, sizeof(addrstr)))
-			continue;
-		hints = *pai;
-		hints.ai_addrlen = host.h_length;
-		hints.ai_addr = (void*)addrp;
-		hints.ai_flags = AI_NUMERICHOST;
-		hints.ai_family = af;
-		if (getaddrinfo(addrstr, NULL, &hints, &res0))
-			continue;
-		for (res = res0; res; res = res->ai_next)
-			res->ai_flags = pai->ai_flags;
-
-		(*aip)->ai_next = res0;
-		while ((*aip)->ai_next)
-			*aip = (*aip)->ai_next;
-	}
-}
-
-#if 0
-static int
-__nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
-{
-	struct addrinfo sentinel, *cur;
-	const char *name;
-	struct addrinfo *ai;
-
-	name  = va_arg(ap, char *);
-	ai = va_arg(ap, struct addrinfo *);
-
-	memset(&sentinel, 0, sizeof(sentinel));
-	cur = &sentinel;
-
-	if ((ai->ai_family == AF_UNSPEC) || (ai->ai_family == AF_INET6))
-		aiforaf(name, AF_INET6, ai, &cur);
-	if ((ai->ai_family == AF_UNSPEC) || (ai->ai_family == AF_INET))
-		aiforaf(name, AF_INET, ai, &cur);
-
-	if (!sentinel.ai_next) {
-		h_errno = HOST_NOT_FOUND;
-		return NS_NOTFOUND;
-	}
-	*((struct addrinfo **)retval) = sentinel.ai_next;
-
-	return NS_SUCCESS;
-}
-#else
 static int
 __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 {
@@ -177,5 +112,4 @@ __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 	}
 	return NS_SUCCESS;
 }
-#endif
 
