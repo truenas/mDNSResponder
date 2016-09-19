@@ -520,6 +520,8 @@ typedef struct result_map
     int aliases_count;
     int addrs_count;
     char * buffer;
+    struct addrinfo *pai;
+    struct addrinfo *ai;
     int addr_idx;
     // Index for addresses - grow from low end
     // Index points to first empty space
@@ -533,6 +535,37 @@ typedef struct result_map
 static const struct timeval
 k_select_time = { 0, 500000 };
 // 0 seconds, 500 milliseconds
+
+// Very simple routine
+static struct addrinfo *
+get_ai_template(int af, struct addrinfo *pai)
+{
+	struct addrinfo *retval;
+	size_t addrlen;
+
+	switch (af) {
+	case AF_INET:
+		addrlen = sizeof(struct sockaddr_in);
+		break;
+	case AF_INET6:
+		addrlen = sizeof(struct sockaddr_in6);
+		break;
+	default:
+		errno = EINVAL;
+		return NULL;
+	}
+	retval = calloc(1, sizeof(*retval) + addrlen);
+	if (retval) {
+		void *sock_ptr = (void*)(retval + 1);
+		if (pai)
+			*retval = *pai;
+		retval->ai_family = af;
+		retval->ai_addr = sock_ptr;
+		retval->ai_addrlen = addrlen;
+		retval->ai_next = NULL;
+	}
+	return retval;
+}
 
 //----------
 // Local prototypes
@@ -840,6 +873,44 @@ mdns_gethostbyname2 (
     return result.status;
 }
 
+int
+mdns_getaddrinfo(
+    const char *name,
+    struct addrinfo *pai,
+    struct addrinfo **res)
+{
+    char lookup_name [k_hostname_maxlen + 1];
+    result_map_t result = { };
+    struct addrinfo tmp = {};
+    struct hostent hent = {};
+    // Initialise result
+
+    set_err_notfound (&result);
+    result.pai = pai ? pai : &tmp;
+    result.hostent = &hent;
+    
+    if (is_applicable_name (&result, name, lookup_name))
+    {
+        // Try using mdns
+        nss_status rv;
+
+        if (MDNS_VERBOSE)
+            syslog (LOG_DEBUG,
+                    "mdns: Local name: %s",
+                    name
+                    );
+
+        rv = mdns_lookup_name (name, pai->ai_family, &result);
+        if (rv == NSS_STATUS_SUCCESS)
+        {
+	    *res = result.ai;
+            return rv;
+        }
+    }
+
+    return result.status;
+}
+
 
 /*
     Lookup a fully qualified hostname using the default record type
@@ -877,13 +948,13 @@ mdns_lookup_name (
     {
     case AF_INET:
         rrtype = kDNSServiceType_A;
-        result->hostent->h_length = 4;
+	result->hostent->h_length = 4;
         // Length of an A record
         break;
 
     case AF_INET6:
         rrtype = kDNSServiceType_AAAA;
-        result->hostent->h_length = 16;
+	result->hostent->h_length = 16;
         // Length of an AAAA record
         break;
 
@@ -1101,6 +1172,7 @@ mdns_lookup_callback
         ns_type_t expected_rr_type =
             af_to_rr (result->hostent->h_addrtype);
 
+        // Idiot check class
         if (rrclass != C_IN)
         {
             syslog (LOG_WARNING,
@@ -1124,26 +1196,73 @@ mdns_lookup_callback
         }
         else if (rrtype == expected_rr_type)
         {
-            if (!
-                add_hostname_or_alias (
-                    result,
-                    fullname,
-                    strlen (fullname)
-                    )
-                )
-            {
-                result->done = 1;
-                return;
-                // Abort on error
-            }
+	    if (result->pai)
+	    {
+		    struct addrinfo *res, **ptr;
+		    int af;
+		    union {
+			    struct sockaddr_in sin;
+			    struct sockaddr_in6 sin6;
+		    } sun = { };
+		    
+		    switch (rrtype) {
+		    case kDNSServiceType_A:
+			    af = AF_INET;
+			    break;
+		    case kDNSServiceType_AAAA:
+			    af = AF_INET6;
+			    break;
+		    default:
+			    result->done = 1;
+			    return;
+		    }
+		    res = get_ai_template(af, result->pai);
+		    if (res == NULL)
+			    abort();
+		    res->ai_family = af;
+		    res->ai_canonname = strdup(fullname);
 
-            if (!add_address_to_buffer (result, rdata, rdlen) )
-            {
-                result->done = 1;
-                return;
-                // Abort on error
-            }
-        }
+		    if (af == AF_INET) {
+			    sun.sin.sin_len = sizeof(sun.sin);
+			    sun.sin.sin_family = AF_INET;
+			    memcpy(&sun.sin.sin_addr, rdata, rdlen);
+		    } else if (af == AF_INET6) {
+			    sun.sin6.sin6_len = sizeof(sun.sin6);
+			    sun.sin6.sin6_family = AF_INET6;
+			    memcpy(&sun.sin6.sin6_addr, rdata, rdlen);
+			    sun.sin6.sin6_scope_id = interface_index;
+		    } else {
+			    result->done = 1;
+			    return;
+		    }
+		    memcpy(res->ai_addr, &sun, res->ai_addrlen);
+		    for (ptr = &result->ai;
+			 *ptr;
+			 ptr = &(*ptr)->ai_next)
+			    ;
+		    *ptr = res;
+	    } else {
+		    if (!
+			add_hostname_or_alias (
+				result,
+				fullname,
+				strlen (fullname)
+				)
+			    )
+		    {
+			    result->done = 1;
+			    return;
+			    // Abort on error
+		    }
+
+		    if (!add_address_to_buffer (result, rdata, rdlen) )
+		    {
+			    result->done = 1;
+			    return;
+			    // Abort on error
+		    }
+	    }
+	}
         else
         {
             syslog (LOG_WARNING,
@@ -1282,6 +1401,7 @@ add_address_to_buffer (result_map_t * result, const void * data, int len)
         return NULL;
     }
 
+    // Idiot check
     if (len != result->hostent->h_length)
     {
         syslog (LOG_WARNING,
@@ -1322,6 +1442,7 @@ contains_address (result_map_t * result, const void * data, int len)
 {
     int i;
 
+    // Idiot check
     if (len != result->hostent->h_length)
     {
         syslog (LOG_WARNING,
@@ -1516,6 +1637,7 @@ init_result (
         return ERANGE;
     }
 
+    result->pai = NULL;
     result->hostent = result_buf;
     result->header = (buf_header_t *) buf;
     result->header->hostname[0] = 0;
@@ -2489,6 +2611,7 @@ cmp_dns_suffix (const char * name, const char * domain)
     const char * nametail;
     const char * domaintail;
 
+    // Idiot checks
     if (*name == 0 || *name == k_dns_separator)
     {
         // Name can't be empty or start with separator

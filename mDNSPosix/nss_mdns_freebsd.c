@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <sys/param.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
@@ -13,6 +14,8 @@ extern int _nss_mdns_gethostbyname2_r(const char *, int,
 		struct hostent *, char *, size_t, int *, int *);
 extern int _nss_mdns_gethostbyaddr_r(const void *, socklen_t, int,
 		struct hostent *, char *, size_t, int *, int *);
+
+extern int mdns_getaddrinfo(const char *, struct addrinfo *, struct addrinfo **);
 
 static NSS_METHOD_PROTOTYPE(__nss_compat_gethostbyname2_r);
 static NSS_METHOD_PROTOTYPE(__nss_compat_gethostbyaddr_r);
@@ -114,6 +117,8 @@ aiforaf(const char *name, int af, struct addrinfo *pai, struct addrinfo **aip)
 			       addrstr, sizeof(addrstr)))
 			continue;
 		hints = *pai;
+		hints.ai_addrlen = host.h_length;
+		hints.ai_addr = (void*)addrp;
 		hints.ai_flags = AI_NUMERICHOST;
 		hints.ai_family = af;
 		if (getaddrinfo(addrstr, NULL, &hints, &res0))
@@ -127,6 +132,7 @@ aiforaf(const char *name, int af, struct addrinfo *pai, struct addrinfo **aip)
 	}
 }
 
+#if 0
 static int
 __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 {
@@ -153,4 +159,23 @@ __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 
 	return NS_SUCCESS;
 }
+#else
+static int
+__nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
+{
+	const char *name;
+	struct addrinfo *ai;
+	int status;
+	
+	name  = va_arg(ap, char *);
+	ai = va_arg(ap, struct addrinfo *);
+
+	status = mdns_getaddrinfo(name, ai, (struct addrinfo **)retval);
+	if (*(struct addrinfo **)retval == NULL) {
+		h_errno = HOST_NOT_FOUND;
+		return NS_NOTFOUND;
+	}
+	return NS_SUCCESS;
+}
+#endif
 
