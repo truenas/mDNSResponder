@@ -1637,6 +1637,7 @@ init_result (
         return ERANGE;
     }
 
+    result->pai = NULL;
     result->hostent = result_buf;
     result->header = (buf_header_t *) buf;
     result->header->hostname[0] = 0;
