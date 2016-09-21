@@ -892,19 +892,29 @@ mdns_getaddrinfo(
     if (is_applicable_name (&result, name, lookup_name))
     {
         // Try using mdns
-        nss_status rv;
-
+	nss_status rv1, rv2;
+	struct addrinfo sentinal = { };
+	
         if (MDNS_VERBOSE)
             syslog (LOG_DEBUG,
                     "mdns: Local name: %s",
                     name
                     );
-
-        rv = mdns_lookup_name (name, pai->ai_family, &result);
-        if (rv == NSS_STATUS_SUCCESS)
+	
+	if (pai->ai_family != AF_INET)
+	{
+		result.done = 0;
+		rv1 = mdns_lookup_name (name, AF_INET6, &result);
+	}
+	if (pai->ai_family != AF_INET6)
+	{
+		result.done = 0;
+		rv2 = mdns_lookup_name (name, AF_INET, &result);
+	}
+	if (rv1 == NSS_STATUS_SUCCESS || rv2 == NSS_STATUS_SUCCESS)
         {
-	    *res = result.ai;
-            return rv;
+		*res = result.ai;
+            return NSS_STATUS_SUCCESS;
         }
     }
 
@@ -1236,6 +1246,7 @@ mdns_lookup_callback
 			    return;
 		    }
 		    memcpy(res->ai_addr, &sun, res->ai_addrlen);
+		    // Append the results to the list
 		    for (ptr = &result->ai;
 			 *ptr;
 			 ptr = &(*ptr)->ai_next)
