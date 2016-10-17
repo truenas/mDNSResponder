@@ -80,6 +80,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/socket.h>
+#include <sys/poll.h>
 
 #include <netinet/in.h>
 
@@ -1094,23 +1095,21 @@ static nss_status
 handle_events (DNSServiceRef sdref, result_map_t * result, const char * str)
 {
     int dns_sd_fd = DNSServiceRefSockFD(sdref);
-    int nfds = dns_sd_fd + 1;
-    fd_set readfds;
-    struct timeval tv;
-    int select_result;
+    struct pollfd pollfd = {
+	    .fd = dns_sd_fd,
+	    .events = POLLIN,
+	    .revents = 0
+    };
+    int timo = (k_select_time.tv_sec * 1000) + (k_select_time.tv_usec / 1000);
 
     while (!result->done)
     {
-        FD_ZERO(&readfds);
-        FD_SET(dns_sd_fd, &readfds);
-
-        tv = k_select_time;
-
-        select_result =
-            select (nfds, &readfds, (fd_set*)NULL, (fd_set*)NULL, &tv);
-        if (select_result > 0)
+	int kr;
+	
+	kr = poll(&pollfd, 1, timo);
+	if (kr > 0)
         {
-            if (FD_ISSET(dns_sd_fd, &readfds))
+	    if ((pollfd.revents & (POLLERR | POLLHUP)) == 0)
             {
                 if (MDNS_VERBOSE)
                     syslog (LOG_DEBUG,
@@ -1122,9 +1121,11 @@ handle_events (DNSServiceRef sdref, result_map_t * result, const char * str)
             else
             {
                 syslog (LOG_WARNING,
-                        "mdns: Unexpected return from select on lookup of %s",
+                        "mdns: Unexpected EOF from kqueue on lookup of %s",
                         str
                         );
+		set_err_notfound (result);
+		break;
             }
         }
         else
