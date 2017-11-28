@@ -37,7 +37,6 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/types.h>
-#include <sys/param.h>
 
 #if __APPLE__
 #undef daemon
@@ -60,26 +59,14 @@ static mDNS_PlatformSupport PlatformStorage;
 
 mDNSlocal void mDNS_StatusCallback(mDNS *const m, mStatus result)
 {
-    char hostname[MAXHOSTNAMELEN];
-    char newhostname[MAXHOSTNAMELEN];
-    char hostlabel[MAX_ESCAPED_DOMAIN_LABEL + 1];
-
+    (void)m; // Unused
     if (result == mStatus_NoError)
     {
-        ConvertDomainLabelToCString_unescaped(&m->hostlabel, hostlabel);
-        snprintf(newhostname, sizeof(newhostname), "%s.local", hostlabel);
-        gethostname(hostname, sizeof(hostname));
-
-        if (strcasecmp(&hostname[strlen(hostname) - strlen(".local")],
-                       ".local") != 0)
-            return;
-
-        if (strcasecmp(hostname, newhostname) != 0)
-        {
-            if (sethostname(newhostname, strlen(newhostname)) != 0)
-                LogMsg("Cannot change system hostname to %s: %s",
-                       newhostname, strerror(errno));
-        }
+        // On successful registration of dot-local mDNS host name, daemon may want to check if
+        // any name conflict and automatic renaming took place, and if so, record the newly negotiated
+        // name in persistent storage for next time. It should also inform the user of the name change.
+        // On Mac OS X we store the current dot-local mDNS host name in the SCPreferences store,
+        // and notify the user with a CFUserNotification.
     }
     else if (result == mStatus_ConfigChanged)
     {
