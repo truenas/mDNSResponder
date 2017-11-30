@@ -154,21 +154,3 @@ __nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
 	return NS_SUCCESS;
 }
 
-static int
-__nss_compat_getaddrinfo(void *retval, void *mdata, va_list ap)
-{
-	const char *name;
-	struct addrinfo *ai;
-	int status;
-	
-	name  = va_arg(ap, char *);
-	ai = va_arg(ap, struct addrinfo *);
-
-	status = mdns_getaddrinfo(name, ai, (struct addrinfo **)retval);
-	if (*(struct addrinfo **)retval == NULL) {
-		h_errno = HOST_NOT_FOUND;
-		return NS_NOTFOUND;
-	}
-	return NS_SUCCESS;
-}
-
