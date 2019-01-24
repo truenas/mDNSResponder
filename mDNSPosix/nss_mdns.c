@@ -80,6 +80,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/socket.h>
+#include <sys/poll.h>
 
 #include <netinet/in.h>
 
@@ -376,6 +377,8 @@ config_is_mdns_suffix (const char * name);
 errcode_t
 init_config ();
 
+static errcode_t __init_config ();
+
 #define ENTNAME  hostent
 #define DATABASE "hosts"
 
@@ -518,6 +521,8 @@ typedef struct result_map
     int aliases_count;
     int addrs_count;
     char * buffer;
+    struct addrinfo *pai;
+    struct addrinfo *ai;
     int addr_idx;
     // Index for addresses - grow from low end
     // Index points to first empty space
@@ -531,6 +536,37 @@ typedef struct result_map
 static const struct timeval
 k_select_time = { 0, 500000 };
 // 0 seconds, 500 milliseconds
+
+// Very simple routine
+static struct addrinfo *
+get_ai_template(int af, struct addrinfo *pai)
+{
+	struct addrinfo *retval;
+	size_t addrlen;
+
+	switch (af) {
+	case AF_INET:
+		addrlen = sizeof(struct sockaddr_in);
+		break;
+	case AF_INET6:
+		addrlen = sizeof(struct sockaddr_in6);
+		break;
+	default:
+		errno = EINVAL;
+		return NULL;
+	}
+	retval = calloc(1, sizeof(*retval) + addrlen);
+	if (retval) {
+		void *sock_ptr = (void*)(retval + 1);
+		if (pai)
+			*retval = *pai;
+		retval->ai_family = af;
+		retval->ai_addr = sock_ptr;
+		retval->ai_addrlen = addrlen;
+		retval->ai_next = NULL;
+	}
+	return retval;
+}
 
 //----------
 // Local prototypes
@@ -838,6 +874,54 @@ mdns_gethostbyname2 (
     return result.status;
 }
 
+int
+mdns_getaddrinfo(
+    const char *name,
+    struct addrinfo *pai,
+    struct addrinfo **res)
+{
+    char lookup_name [k_hostname_maxlen + 1];
+    result_map_t result = { };
+    struct addrinfo tmp = {};
+    struct hostent hent = {};
+    // Initialise result
+
+    set_err_notfound (&result);
+    result.pai = pai ? pai : &tmp;
+    result.hostent = &hent;
+    
+    if (is_applicable_name (&result, name, lookup_name))
+    {
+        // Try using mdns
+	nss_status rv1, rv2;
+	struct addrinfo sentinal = { };
+	
+        if (MDNS_VERBOSE)
+            syslog (LOG_DEBUG,
+                    "mdns: Local name: %s",
+                    name
+                    );
+	
+	if (pai->ai_family != AF_INET)
+	{
+		result.done = 0;
+		rv1 = mdns_lookup_name (name, AF_INET6, &result);
+	}
+	if (pai->ai_family != AF_INET6)
+	{
+		result.done = 0;
+		rv2 = mdns_lookup_name (name, AF_INET, &result);
+	}
+	if (rv1 == NSS_STATUS_SUCCESS || rv2 == NSS_STATUS_SUCCESS)
+        {
+		*res = result.ai;
+            return NSS_STATUS_SUCCESS;
+        }
+    }
+
+    return result.status;
+}
+
 
 /*
     Lookup a fully qualified hostname using the default record type
@@ -875,13 +959,13 @@ mdns_lookup_name (
     {
     case AF_INET:
         rrtype = kDNSServiceType_A;
-        result->hostent->h_length = 4;
+	result->hostent->h_length = 4;
         // Length of an A record
         break;
 
     case AF_INET6:
         rrtype = kDNSServiceType_AAAA;
-        result->hostent->h_length = 16;
+	result->hostent->h_length = 16;
         // Length of an AAAA record
         break;
 
@@ -1011,23 +1095,21 @@ static nss_status
 handle_events (DNSServiceRef sdref, result_map_t * result, const char * str)
 {
     int dns_sd_fd = DNSServiceRefSockFD(sdref);
-    int nfds = dns_sd_fd + 1;
-    fd_set readfds;
-    struct timeval tv;
-    int select_result;
+    struct pollfd pollfd = {
+	    .fd = dns_sd_fd,
+	    .events = POLLIN,
+	    .revents = 0
+    };
+    int timo = (k_select_time.tv_sec * 1000) + (k_select_time.tv_usec / 1000);
 
     while (!result->done)
     {
-        FD_ZERO(&readfds);
-        FD_SET(dns_sd_fd, &readfds);
-
-        tv = k_select_time;
-
-        select_result =
-            select (nfds, &readfds, (fd_set*)NULL, (fd_set*)NULL, &tv);
-        if (select_result > 0)
+	int kr;
+	
+	kr = poll(&pollfd, 1, timo);
+	if (kr > 0)
         {
-            if (FD_ISSET(dns_sd_fd, &readfds))
+	    if ((pollfd.revents & (POLLERR | POLLHUP)) == 0)
             {
                 if (MDNS_VERBOSE)
                     syslog (LOG_DEBUG,
@@ -1039,9 +1121,11 @@ handle_events (DNSServiceRef sdref, result_map_t * result, const char * str)
             else
             {
                 syslog (LOG_WARNING,
-                        "mdns: Unexpected return from select on lookup of %s",
+                        "mdns: Unexpected EOF from kqueue on lookup of %s",
                         str
                         );
+		set_err_notfound (result);
+		break;
             }
         }
         else
@@ -1123,26 +1207,74 @@ mdns_lookup_callback
         }
         else if (rrtype == expected_rr_type)
         {
-            if (!
-                add_hostname_or_alias (
-                    result,
-                    fullname,
-                    strlen (fullname)
-                    )
-                )
-            {
-                result->done = 1;
-                return;
-                // Abort on error
-            }
+	    if (result->pai)
+	    {
+		    struct addrinfo *res, **ptr;
+		    int af;
+		    union {
+			    struct sockaddr_in sin;
+			    struct sockaddr_in6 sin6;
+		    } sun = { };
+		    
+		    switch (rrtype) {
+		    case kDNSServiceType_A:
+			    af = AF_INET;
+			    break;
+		    case kDNSServiceType_AAAA:
+			    af = AF_INET6;
+			    break;
+		    default:
+			    result->done = 1;
+			    return;
+		    }
+		    res = get_ai_template(af, result->pai);
+		    if (res == NULL)
+			    abort();
+		    res->ai_family = af;
+		    res->ai_canonname = strdup(fullname);
 
-            if (!add_address_to_buffer (result, rdata, rdlen) )
-            {
-                result->done = 1;
-                return;
-                // Abort on error
-            }
-        }
+		    if (af == AF_INET) {
+			    sun.sin.sin_len = sizeof(sun.sin);
+			    sun.sin.sin_family = AF_INET;
+			    memcpy(&sun.sin.sin_addr, rdata, rdlen);
+		    } else if (af == AF_INET6) {
+			    sun.sin6.sin6_len = sizeof(sun.sin6);
+			    sun.sin6.sin6_family = AF_INET6;
+			    memcpy(&sun.sin6.sin6_addr, rdata, rdlen);
+			    sun.sin6.sin6_scope_id = interface_index;
+		    } else {
+			    result->done = 1;
+			    return;
+		    }
+		    memcpy(res->ai_addr, &sun, res->ai_addrlen);
+		    // Append the results to the list
+		    for (ptr = &result->ai;
+			 *ptr;
+			 ptr = &(*ptr)->ai_next)
+			    ;
+		    *ptr = res;
+	    } else {
+		    if (!
+			add_hostname_or_alias (
+				result,
+				fullname,
+				strlen (fullname)
+				)
+			    )
+		    {
+			    result->done = 1;
+			    return;
+			    // Abort on error
+		    }
+
+		    if (!add_address_to_buffer (result, rdata, rdlen) )
+		    {
+			    result->done = 1;
+			    return;
+			    // Abort on error
+		    }
+	    }
+	}
         else
         {
             syslog (LOG_WARNING,
@@ -1517,6 +1649,7 @@ init_result (
         return ERANGE;
     }
 
+    result->pai = NULL;
     result->hostent = result_buf;
     result->header = (buf_header_t *) buf;
     result->header->hostname[0] = 0;
@@ -1803,6 +1936,12 @@ pthread_mutex_t g_config_mutex =
 errcode_t
 init_config ()
 {
+    return __init_config();
+}
+
+static errcode_t
+__init_config ()
+{
     if (g_config)
     {
         /*
@@ -1876,7 +2015,7 @@ init_config ()
 int
 config_is_mdns_suffix (const char * name)
 {
-    int errcode = init_config ();
+    int errcode = __init_config ();
     if (!errcode)
     {
         return contains_domain_suffix (g_config, name);

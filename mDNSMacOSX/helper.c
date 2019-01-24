@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4 -*-
  *
- * Copyright (c) 2007-2015 Apple Inc. All rights reserved.
+ * Copyright (c) 2007-2018 Apple Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -710,7 +710,12 @@ fin:
 
 enum DNSKeyFormat
 {
-    formatNotDNSKey, formatDdnsTypeItem, formatDnsPrefixedServiceItem, formatBtmmPrefixedServiceItem
+    formatNotDNSKey,
+    formatDdnsTypeItem,
+    formatDnsPrefixedServiceItem,
+#if MDNSRESPONDER_BTMM_SUPPORT
+    formatBtmmPrefixedServiceItem
+#endif
 };
 
 // On Mac OS X on Intel, the four-character string seems to be stored backwards, at least sometimes.
@@ -720,7 +725,9 @@ enum DNSKeyFormat
 
 
 #ifndef NO_SECURITYFRAMEWORK
+#if MDNSRESPONDER_BTMM_SUPPORT
 static const char btmmprefix[] = "btmmdns:";
+#endif
 static const char dnsprefix[] = "dns:";
 static const char ddns[] = "ddns";
 static const char ddnsrev[] = "sndd";
@@ -778,8 +785,10 @@ static enum DNSKeyFormat getDNSKeyFormat(SecKeychainItemRef item, SecKeychainAtt
     }
     if (attributes->attr[1].length >= sizeof(dnsprefix)-1 && 0 == strncasecmp(attributes->attr[1].data, dnsprefix, sizeof(dnsprefix)-1))
         format = formatDnsPrefixedServiceItem;
+#if MDNSRESPONDER_BTMM_SUPPORT
     else if (attributes->attr[1].length >= sizeof(btmmprefix)-1 && 0 == strncasecmp(attributes->attr[1].data, btmmprefix, sizeof(btmmprefix)-1))
         format = formatBtmmPrefixedServiceItem;
+#endif
     else if (attributes->attr[0].length == sizeof(ddns)-1 && 0 == strncasecmp(attributes->attr[0].data, ddns, sizeof(ddns)-1))
         format = formatDdnsTypeItem;
     else if (attributes->attr[0].length == sizeof(ddnsrev)-1 && 0 == strncasecmp(attributes->attr[0].data, ddnsrev, sizeof(ddnsrev)-1))
@@ -821,7 +830,9 @@ static CFPropertyListRef copyKeychainItemInfo(SecKeychainItemRef item, SecKeycha
             data = CFDataCreate(kCFAllocatorDefault, attributes->attr[1].data, attributes->attr[1].length);
             break;
         case formatDnsPrefixedServiceItem:
+#if MDNSRESPONDER_BTMM_SUPPORT
         case formatBtmmPrefixedServiceItem:
+#endif
             data = CFDataCreate(kCFAllocatorDefault, attributes->attr[1].data, attributes->attr[1].length);
             break;
         default:
@@ -1456,15 +1467,17 @@ void RetrieveTCPInfo(int family, const v6addr_t laddr, uint16_t lport, const v6a
     sz = sizeof(mib)/sizeof(mib[0]);
     if (sysctlnametomib("net.inet.tcp.info", mib, &sz) == -1)
     {
-        os_log(log_handle, "RetrieveTCPInfo: sysctlnametomib failed %d, %s", errno, strerror(errno));
-        *err = errno;
+        const int sysctl_errno = errno;
+        os_log(log_handle, "RetrieveTCPInfo: sysctlnametomib failed %d, %s", sysctl_errno, strerror(sysctl_errno));
+        *err = sysctl_errno;
     }
     miblen = (unsigned int)sz;
     len    = sizeof(struct tcp_info);
     if (sysctl(mib, miblen, &ti, &len, &itpl, sizeof(struct info_tuple)) == -1)
     {
-        os_log(log_handle, "RetrieveTCPInfo: sysctl failed %d, %s", errno, strerror(errno));
-        *err = errno;
+        const int sysctl_errno = errno;
+        os_log(log_handle, "RetrieveTCPInfo: sysctl failed %d, %s", sysctl_errno, strerror(sysctl_errno));
+        *err = sysctl_errno;
     }
     
     *seq    = ti.tcpi_snd_nxt - 1;
@@ -1745,8 +1758,9 @@ static int startRacoon(void)
         }
         else if (result < 0)
         {
-            os_log_debug(log_handle, "select returned %d errno %d %s", result, errno, strerror(errno));
-            if (errno != EINTR) break;
+            const int select_errno = errno;
+            os_log_debug(log_handle, "select returned %d errno %d %s", result, select_errno, strerror(select_errno));
+            if (select_errno != EINTR) break;
         }
     }
     
@@ -1827,7 +1841,7 @@ static int setupTunnelRoute(const v6addr_t local, const v6addr_t remote)
     /* send message, ignore error when route already exists */
     if (0 > write(s, &msg, msg.hdr.rtm_msglen))
     {
-        int errno_ = errno;
+        const int errno_ = errno;
         
         os_log_info(log_handle,"write to routing socket failed: %s", strerror(errno_));
         if (EEXIST != errno_)
@@ -1872,7 +1886,7 @@ static int teardownTunnelRoute(const v6addr_t remote)
     memcpy(&msg.dst.sin6_addr, remote, sizeof(msg.dst.sin6_addr));
     if (0 > write(s, &msg, msg.hdr.rtm_msglen))
     {
-        int errno_ = errno;
+        const int errno_ = errno;
         
         os_log_debug(log_handle,"write to routing socket failed: %s", strerror(errno_));
         

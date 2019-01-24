@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 4 -*-
  *
- * Copyright (c) 2002-2016 Apple Inc. All rights reserved.
+ * Copyright (c) 2002-2018 Apple Inc. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,22 +86,22 @@
 #include <SystemConfiguration/SCPrivate.h>
 
 #if TARGET_OS_IPHONE
-// For WiFiManagerClientRef etc, declarations.
-#include <MobileGestalt.h>
-#include <MobileWiFi/WiFiManagerClient.h>
+#include <MobileWiFi/WiFiManagerClient.h> // For WiFiManagerClientRef etc, declarations.
 #include <dlfcn.h>
+#include <os/variant_private.h>           // For os_variant_has_internal_diagnostics().
 #endif // TARGET_OS_IPHONE
 
 // Include definition of opaque_presence_indication for KEV_DL_NODE_PRESENCE handling logic.
 #include <Kernel/IOKit/apple80211/apple80211_var.h>
 #include <network_information.h>  // for nwi_state
 
-#if APPLE_OSX_mDNSResponder
+#if MDNSRESPONDER_BTMM_SUPPORT
 #include <AWACS.h>
+#endif
+
+#if APPLE_OSX_mDNSResponder
 #include <ne_session.h> // for ne_session_set_socket_attributes()
-#else
-#define NO_AWACS 1
-#endif // APPLE_OSX_mDNSResponder
+#endif
 
 #if APPLE_OSX_mDNSResponder && !TARGET_OS_EMBEDDED
 #include <IOKit/platform/IOPlatformSupportPrivate.h>
@@ -153,9 +153,11 @@ static CFStringRef NetworkChangedKey_Computername;
 static CFStringRef NetworkChangedKey_DNS;
 static CFStringRef NetworkChangedKey_StateInterfacePrefix;
 static CFStringRef NetworkChangedKey_DynamicDNS       = CFSTR("Setup:/Network/DynamicDNS");
+static CFStringRef NetworkChangedKey_PowerSettings    = CFSTR("State:/IOKit/PowerManagement/CurrentSettings");
+#if MDNSRESPONDER_BTMM_SUPPORT
 static CFStringRef NetworkChangedKey_BackToMyMac      = CFSTR("Setup:/Network/BackToMyMac");
 static CFStringRef NetworkChangedKey_BTMMConnectivity = CFSTR("State:/Network/Connectivity");
-static CFStringRef NetworkChangedKey_PowerSettings    = CFSTR("State:/IOKit/PowerManagement/CurrentSettings");
+#endif
 
 static char HINFO_HWstring_buffer[32];
 static char *HINFO_HWstring = "Device";
@@ -661,6 +663,7 @@ mDNSexport mStatus mDNSPlatformSendUDP(const mDNS *const m, const void *const ms
     struct sockaddr_storage to;
     int s = -1, err;
     mStatus result = mStatus_NoError;
+    int sendto_errno;
 
     if (InterfaceID)
     {
@@ -736,9 +739,10 @@ mDNSexport mStatus mDNSPlatformSendUDP(const mDNS *const m, const void *const ms
             err = setsockopt(s, IPPROTO_IPV6, IPV6_MULTICAST_IF, &info->scope_id, sizeof(info->scope_id));
             if (err < 0)
             {
+                const int setsockopt_errno = errno;
                 char name[IFNAMSIZ];
                 if (if_indextoname(info->scope_id, name) != NULL)
-                    LogMsg("setsockopt - IPV6_MULTICAST_IF error %d errno %d (%s)", err, errno, strerror(errno));
+                    LogMsg("setsockopt - IPV6_MULTICAST_IF error %d errno %d (%s)", err, setsockopt_errno, strerror(setsockopt_errno));
                 else
                     LogInfo("setsockopt - IPV6_MUTLICAST_IF scopeid %d, not a valid interface", info->scope_id);
             }
@@ -779,6 +783,7 @@ mDNSexport mStatus mDNSPlatformSendUDP(const mDNS *const m, const void *const ms
         setTrafficClass(s, useBackgroundTrafficClass);
 
     err = sendto(s, msg, (UInt8*)end - (UInt8*)msg, 0, (struct sockaddr *)&to, to.ss_len);
+    sendto_errno = (err < 0) ? errno : 0;
 
     // set traffic class back to default value
     if (useBackgroundTrafficClass)
@@ -788,30 +793,30 @@ mDNSexport mStatus mDNSPlatformSendUDP(const mDNS *const m, const void *const ms
     {
         static int MessageCount = 0;
         LogInfo("mDNSPlatformSendUDP -> sendto(%d) failed to send packet on InterfaceID %p %5s/%d to %#a:%d skt %d error %d errno %d (%s) %lu",
-                s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, errno, strerror(errno), (mDNSu32)(m->timenow));
+                s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, sendto_errno, strerror(sendto_errno), (mDNSu32)(m->timenow));
         if (!mDNSAddressIsAllDNSLinkGroup(dst))
         {
-            if (errno == EHOSTUNREACH) return(mStatus_HostUnreachErr);
-            if (errno == EHOSTDOWN || errno == ENETDOWN || errno == ENETUNREACH) return(mStatus_TransientErr);
+            if ((sendto_errno == EHOSTUNREACH) || (sendto_errno == ENETUNREACH)) return(mStatus_HostUnreachErr);
+            if ((sendto_errno == EHOSTDOWN)    || (sendto_errno == ENETDOWN))    return(mStatus_TransientErr);
         }
         // Don't report EHOSTUNREACH in the first three minutes after boot
         // This is because mDNSResponder intentionally starts up early in the boot process (See <rdar://problem/3409090>)
         // but this means that sometimes it starts before configd has finished setting up the multicast routing entries.
-        if (errno == EHOSTUNREACH && (mDNSu32)(mDNSPlatformRawTime()) < (mDNSu32)(mDNSPlatformOneSecond * 180)) return(mStatus_TransientErr);
+        if (sendto_errno == EHOSTUNREACH && (mDNSu32)(mDNSPlatformRawTime()) < (mDNSu32)(mDNSPlatformOneSecond * 180)) return(mStatus_TransientErr);
         // Don't report EADDRNOTAVAIL ("Can't assign requested address") if we're in the middle of a network configuration change
-        if (errno == EADDRNOTAVAIL && m->NetworkChanged) return(mStatus_TransientErr);
-        if (errno == EHOSTUNREACH || errno == EADDRNOTAVAIL || errno == ENETDOWN)
+        if (sendto_errno == EADDRNOTAVAIL && m->NetworkChanged) return(mStatus_TransientErr);
+        if (sendto_errno == EHOSTUNREACH || sendto_errno == EADDRNOTAVAIL || sendto_errno == ENETDOWN)
             LogInfo("mDNSPlatformSendUDP sendto(%d) failed to send packet on InterfaceID %p %5s/%d to %#a:%d skt %d error %d errno %d (%s) %lu",
-                    s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, errno, strerror(errno), (mDNSu32)(m->timenow));
+                    s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, sendto_errno, strerror(sendto_errno), (mDNSu32)(m->timenow));
         else
         {
             MessageCount++;
             if (MessageCount < 50)  // Cap and ensure NO spamming of LogMsgs
                 LogMsg("mDNSPlatformSendUDP: sendto(%d) failed to send packet on InterfaceID %p %5s/%d to %#a:%d skt %d error %d errno %d (%s) %lu MessageCount is %d",
-                       s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, errno, strerror(errno), (mDNSu32)(m->timenow), MessageCount);
+                       s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, sendto_errno, strerror(sendto_errno), (mDNSu32)(m->timenow), MessageCount);
             else  // If logging is enabled, remove the cap and log aggressively
                 LogInfo("mDNSPlatformSendUDP: sendto(%d) failed to send packet on InterfaceID %p %5s/%d to %#a:%d skt %d error %d errno %d (%s) %lu MessageCount is %d",
-                        s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, errno, strerror(errno), (mDNSu32)(m->timenow), MessageCount);
+                        s, InterfaceID, ifa_name, dst->type, dst, mDNSVal16(dstPort), s, err, sendto_errno, strerror(sendto_errno), (mDNSu32)(m->timenow), MessageCount);
         }
 
         result = mStatus_UnknownErr;
@@ -1071,7 +1076,7 @@ mDNSexport void myKQSocketCallBack(int s1, short filter, void *context, mDNSBool
         // Find out about other socket parameter that can help understand why select() says the socket is ready for read
         // All of this is racy, as data may have arrived after the call to select()
         static unsigned int numLogMessages = 0;
-        int save_errno = errno;
+        const int save_errno = errno;
         int so_error = -1;
         int so_nread = -1;
         int fionread = -1;
@@ -1912,6 +1917,7 @@ mDNSlocal mStatus SetupSocket(KQSocketSet *cp, const mDNSIPPort port, u_short sa
     mStatus err = mStatus_NoError;
     char *errstr = mDNSNULL;
     const int mtu = 0;
+    int saved_errno;
 
     cp->closeFlag = mDNSNULL;
 
@@ -2044,12 +2050,13 @@ mDNSlocal mStatus SetupSocket(KQSocketSet *cp, const mDNSIPPort port, u_short sa
     return(mStatus_NoError);
 
 fail:
+    saved_errno = errno;
     // For "bind" failures, only write log messages for our shared mDNS port, or for binding to zero
     if (strcmp(errstr, "bind") || mDNSSameIPPort(port, MulticastDNSPort) || mDNSIPPortIsZero(port))
-        LogMsg("%s skt %d port %d error %d errno %d (%s)", errstr, skt, mDNSVal16(port), err, errno, strerror(errno));
+        LogMsg("%s skt %d port %d error %d errno %d (%s)", errstr, skt, mDNSVal16(port), err, saved_errno, strerror(saved_errno));
 
     // If we got a "bind" failure of EADDRINUSE, inform the caller as it might need to try another random port
-    if (!strcmp(errstr, "bind") && errno == EADDRINUSE)
+    if (!strcmp(errstr, "bind") && saved_errno == EADDRINUSE)
     {
         err = EADDRINUSE;
         if (mDNSSameIPPort(port, MulticastDNSPort))
@@ -2325,8 +2332,9 @@ cp += len;                  \
     sock = socket(PF_ROUTE, SOCK_RAW, 0);
     if (sock < 0)
     {
-        LogMsg("getMACAddress: Can not open the socket - %s", strerror(errno));
-        return errno;
+        const int socket_errno = errno;
+        LogMsg("getMACAddress: Can not open the socket - %s", strerror(socket_errno));
+        return socket_errno;
     }
     
     rtm->rtm_addrs   |= RTA_DST | RTA_GATEWAY;
@@ -2358,9 +2366,10 @@ cp += len;                  \
     
     if (write(sock, (char *)&m_rtmsg, rlen) < 0)
     {
-        LogMsg("getMACAddress: writing to routing socket: %s", strerror(errno));
+        const int write_errno = errno;
+        LogMsg("getMACAddress: writing to routing socket: %s", strerror(write_errno));
         close(sock);
-        return errno;
+        return write_errno;
     }
     
     do
@@ -3235,7 +3244,11 @@ mDNSlocal  mDNSBool InterfaceSupportsKeepAlive(NetworkInterfaceInfo *const intf)
 mDNSlocal mDNSBool NetWakeInterface(NetworkInterfaceInfoOSX *i)
 {
     // We only use Sleep Proxy Service on multicast-capable interfaces, except loopback and D2D.
-    if (!SPSInterface(i)) return(mDNSfalse);
+    if (!MulticastInterface(i) || (i->ifa_flags & IFF_LOOPBACK) || i->D2DInterface)
+    {
+        LogSPS("NetWakeInterface: returning false for %s", i->ifinfo.ifname);
+        return(mDNSfalse);
+    }
 
     // If the interface supports TCPKeepalive, it is capable of waking up for a magic packet
     // This check is needed since the SIOCGIFWAKEFLAGS ioctl returns wrong values for WOMP capability
@@ -3253,15 +3266,16 @@ mDNSlocal mDNSBool NetWakeInterface(NetworkInterfaceInfoOSX *i)
     strlcpy(ifr.ifr_name, i->ifinfo.ifname, sizeof(ifr.ifr_name));
     if (ioctl(s, SIOCGIFWAKEFLAGS, &ifr) < 0)
     {
+        const int ioctl_errno = errno;
         // For some strange reason, in /usr/include/sys/errno.h, EOPNOTSUPP is defined to be
         // 102 when compiling kernel code, and 45 when compiling user-level code. Since this
         // error code is being returned from the kernel, we need to use the kernel version.
         #define KERNEL_EOPNOTSUPP 102
-        if (errno != KERNEL_EOPNOTSUPP) // "Operation not supported on socket", the expected result on Leopard and earlier
-            LogMsg("NetWakeInterface SIOCGIFWAKEFLAGS %s errno %d (%s)", i->ifinfo.ifname, errno, strerror(errno));
+        if (ioctl_errno != KERNEL_EOPNOTSUPP) // "Operation not supported on socket", the expected result on Leopard and earlier
+            LogMsg("NetWakeInterface SIOCGIFWAKEFLAGS %s errno %d (%s)", i->ifinfo.ifname, ioctl_errno, strerror(ioctl_errno));
         // If on Leopard or earlier, we get EOPNOTSUPP, so in that case
         // we enable WOL if this interface is not AirPort and "Wake for Network access" is turned on.
-        ifr.ifr_wake_flags = (errno == KERNEL_EOPNOTSUPP && !(i)->BSSID.l[0] && i->m->SystemWakeOnLANEnabled) ? IF_WAKE_ON_MAGIC_PACKET : 0;
+        ifr.ifr_wake_flags = (ioctl_errno == KERNEL_EOPNOTSUPP && !(i)->BSSID.l[0] && i->m->SystemWakeOnLANEnabled) ? IF_WAKE_ON_MAGIC_PACKET : 0;
     }
 
     close(s);
@@ -3297,6 +3311,40 @@ mDNSlocal u_int64_t getExtendedFlags(char * ifa_name)
     close(sockFD);
     return ifr.ifr_eflags;
 }
+
+#if TARGET_OS_OSX 
+// IFRTYPE_FUNCTIONAL_INTCOPROC type interfaces on macOS do not support Bonjour discovery.
+mDNSlocal mDNSBool isCoprocessorInterface(int sockFD, char * ifa_name)
+{
+    struct ifreq ifr;
+
+    if (sockFD < 0)
+    {
+        LogMsg("isCoprocessorInterface: invalid socket FD passed: %d", sockFD);
+        return mDNSfalse;
+    }
+
+    memset(&ifr, 0, sizeof(struct ifreq));
+    strlcpy(ifr.ifr_name, ifa_name, sizeof(ifr.ifr_name));
+
+    if (ioctl(sockFD, SIOCGIFFUNCTIONALTYPE, (caddr_t)&ifr) == -1)
+    {
+        LogMsg("isCoprocessorInterface: SIOCGIFFUNCTIONALTYPE failed, errno = %d (%s)", errno, strerror(errno));
+        return mDNSfalse;
+    }
+
+    if (ifr.ifr_functional_type == IFRTYPE_FUNCTIONAL_INTCOPROC)
+    {
+        LogMsg("isCoprocessorInterface: %s marked as coprocessor interface", ifa_name);
+        return mDNStrue;
+    }
+    else
+        return mDNSfalse;
+}
+
+#else   // TARGET_OS_OSX
+#define isCoprocessorInterface(A, B)    mDNSfalse
+#endif   // TARGET_OS_OSX
 
 #if TARGET_OS_IPHONE
 
@@ -3487,7 +3535,17 @@ mDNSlocal NetworkInterfaceInfoOSX *AddInterfaceToList(struct ifaddrs *ifa, mDNSs
             // we get the corresponding name for the interface index on which the packet was received and check against
             // the InterfaceList for a matching name. So, keep the name in sync
             strlcpy((*p)->ifinfo.ifname, ifa->ifa_name, sizeof((*p)->ifinfo.ifname));
-            (*p)->Exists = mDNStrue;
+
+            // Determine if multicast state has changed.
+            const mDNSBool txrx = MulticastInterface(*p);
+            if ((*p)->ifinfo.McastTxRx != txrx)
+            {
+                (*p)->ifinfo.McastTxRx = txrx;
+                (*p)->Exists = MulticastStateChanged; // State change; need to deregister and reregister this interface
+            }
+            else
+                 (*p)->Exists = mDNStrue;
+
             // If interface was not in getifaddrs list last time we looked, but it is now, update 'AppearanceTime' for this record
             if ((*p)->LastSeen != utc) (*p)->AppearanceTime = utc;
 
@@ -3527,7 +3585,6 @@ mDNSlocal NetworkInterfaceInfoOSX *AddInterfaceToList(struct ifaddrs *ifa, mDNSs
     // We can be configured to disable multicast advertisement, but we want to to support
     // local-only services, which need a loopback address record.
     i->ifinfo.Advertise   = m->DivertMulticastAdvertisements ? ((ifa->ifa_flags & IFF_LOOPBACK) ? mDNStrue : mDNSfalse) : m->AdvertiseLocalAddresses;
-    i->ifinfo.McastTxRx   = mDNSfalse; // For now; will be set up later at the end of UpdateInterfaceList
     i->ifinfo.Loopback    = ((ifa->ifa_flags & IFF_LOOPBACK) != 0) ? mDNStrue : mDNSfalse;
     i->ifinfo.IgnoreIPv4LL = ((eflags & IFEF_ARPLL) != 0) ? mDNSfalse : mDNStrue;
 
@@ -3554,6 +3611,7 @@ mDNSlocal NetworkInterfaceInfoOSX *AddInterfaceToList(struct ifaddrs *ifa, mDNSs
         LogInfo("AddInterfaceToList: D2DInterface set for %s", ifa->ifa_name);
 
     i->isExpensive     = (eflags & IFEF_EXPENSIVE) ? mDNStrue: mDNSfalse;
+    i->isAWDL          = (eflags & IFEF_AWDL)      ? mDNStrue: mDNSfalse;
     if (eflags & IFEF_AWDL)
     {
         // Set SupportsUnicastMDNSResponse false for the AWDL interface since unicast reserves
@@ -3578,6 +3636,8 @@ mDNSlocal NetworkInterfaceInfoOSX *AddInterfaceToList(struct ifaddrs *ifa, mDNSs
     i->BPF_len         = 0;
     i->Registered      = mDNSNULL;
 
+    // MulticastInterface() depends on the "m" and "ifa_flags" values being initialized above.
+    i->ifinfo.McastTxRx   = MulticastInterface(i);
     // Do this AFTER i->BSSID has been set up
     i->ifinfo.NetWake  = (eflags & IFEF_EXPENSIVE)? mDNSfalse :  NetWakeInterface(i);
     GetMAC(&i->ifinfo.MAC, scope_id);
@@ -4815,14 +4875,14 @@ mDNSlocal mStatus UpdateInterfaceList(mDNSs32 utc)
                 mDNSPlatformMemCopy(m->PrimaryMAC.b, sdl->sdl_data + sdl->sdl_nlen, 6);
         }
 
-        if (ifa->ifa_flags & IFF_UP && ifa->ifa_addr)
+        if (ifa->ifa_flags & IFF_UP && ifa->ifa_addr && !isCoprocessorInterface(InfoSocket, ifa->ifa_name))
             if (ifa->ifa_addr->sa_family == AF_INET || ifa->ifa_addr->sa_family == AF_INET6)
             {
                 if (!ifa->ifa_netmask)
                 {
                     mDNSAddr ip;
                     SetupAddr(&ip, ifa->ifa_addr);
-                    LogMsg("getifaddrs: ifa_netmask is NULL for %5s(%d) Flags %04X Family %2d %#a",
+                    LogMsg("UpdateInterfaceList: ifa_netmask is NULL for %5s(%d) Flags %04X Family %2d %#a",
                            ifa->ifa_name, if_nametoindex(ifa->ifa_name), ifa->ifa_flags, ifa->ifa_addr->sa_family, &ip);
                 }
                 // Apparently it's normal for the sa_family of an ifa_netmask to sometimes be zero, so we don't complain about that
@@ -4831,7 +4891,7 @@ mDNSlocal mStatus UpdateInterfaceList(mDNSs32 utc)
                 {
                     mDNSAddr ip;
                     SetupAddr(&ip, ifa->ifa_addr);
-                    LogMsg("getifaddrs ifa_netmask for %5s(%d) Flags %04X Family %2d %#a has different family: %d",
+                    LogMsg("UpdateInterfaceList: ifa_netmask for %5s(%d) Flags %04X Family %2d %#a has different family: %d",
                            ifa->ifa_name, if_nametoindex(ifa->ifa_name), ifa->ifa_flags, ifa->ifa_addr->sa_family, &ip, ifa->ifa_netmask->sa_family);
                 }
                 // Currently we use a few internal ones like mDNSInterfaceID_LocalOnly etc. that are negative values (0, -1, -2).
@@ -4887,19 +4947,6 @@ mDNSlocal mStatus UpdateInterfaceList(mDNSs32 utc)
     // For efficiency, we don't register a loopback interface when other interfaces of that family are available and advertising
     if (!foundav4 && v4Loopback) AddInterfaceToList(v4Loopback, utc);
     if (!foundav6 && v6Loopback) AddInterfaceToList(v6Loopback, utc);
-
-    // Now the list is complete, set the McastTxRx setting for each interface.
-    NetworkInterfaceInfoOSX *i;
-    for (i = m->p->InterfaceList; i; i = i->next)
-        if (i->Exists)
-        {
-            mDNSBool txrx = MulticastInterface(i);
-            if (i->ifinfo.McastTxRx != txrx)
-            {
-                i->ifinfo.McastTxRx = txrx;
-                i->Exists = MulticastStateChanged; // State change; need to deregister and reregister this interface
-            }
-        }
 
     if (InfoSocket >= 0) 
         close(InfoSocket);
@@ -5222,7 +5269,7 @@ mDNSlocal int ClearInactiveInterfaces(mDNSs32 utc)
         if (!i->Exists)
         {
             if (i->LastSeen == utc) i->LastSeen = utc - 1;
-            mDNSBool delete = (NumCacheRecordsForInterfaceID(m, i->ifinfo.InterfaceID) == 0) && (utc - i->LastSeen >= 60);
+            const mDNSBool delete = (i->isAWDL || (NumCacheRecordsForInterfaceID(m, i->ifinfo.InterfaceID) == 0)) && (utc - i->LastSeen >= 60);
             LogInfo("ClearInactiveInterfaces: %-13s %5s(%lu) %.6a InterfaceID %p(%p) %#a/%d Age %d%s", delete ? "Deleting" : "Holding",
                     i->ifinfo.ifname, i->scope_id, &i->BSSID, i->ifinfo.InterfaceID, i,
                     &i->ifinfo.ip, CountMaskBits(&i->ifinfo.mask), utc - i->LastSeen,
@@ -5806,6 +5853,7 @@ mDNSlocal void SetupDDNSDomains(domainname *const fqdn, DNameListElem **RegDomai
         }
         CFRelease(ddnsdict);
     }
+#if MDNSRESPONDER_BTMM_SUPPORT
     if (RegDomains)
     {
         CFDictionaryRef btmm = SCDynamicStoreCopyValue(NULL, NetworkChangedKey_BackToMyMac);
@@ -5835,7 +5883,7 @@ mDNSlocal void SetupDDNSDomains(domainname *const fqdn, DNameListElem **RegDomai
             CFRelease(btmm);
         }
     }
-
+#endif
 }
 
 // Returns mDNSfalse, if it does not set the configuration i.e., if the DNS configuration did not change
@@ -6129,7 +6177,7 @@ mDNSexport void mDNSPlatformDynDNSHostNameStatusChanged(const domainname *const 
     }
 }
 
-#if APPLE_OSX_mDNSResponder
+#if MDNSRESPONDER_BTMM_SUPPORT
 #if !NO_AWACS
 
 // checks whether a domain is present in Setup:/Network/BackToMyMac. Just because there is a key in the
@@ -6271,7 +6319,7 @@ mDNSlocal void UpdateBTMMRelayConnection(mDNS *const m)
         else LogInfo("UpdateBTMMRelayConnection: Not calling AWS_Disconnect");
     }
 }
-#elif !TARGET_OS_EMBEDDED
+#else
 mDNSlocal void UpdateBTMMRelayConnection(mDNS *const m)
 {
     (void) m; // Unused
@@ -6279,11 +6327,9 @@ mDNSlocal void UpdateBTMMRelayConnection(mDNS *const m)
 }
 #endif // ! NO_AWACS
 
-#if !TARGET_OS_EMBEDDED
 mDNSlocal void ProcessConndConfigChanges(void);
-#endif
 
-#endif // APPLE_OSX_mDNSResponder
+#endif // MDNSRESPONDER_BTMM_SUPPORT
 
 // MUST be called holding the lock
 mDNSlocal void SetDomainSecrets_internal(mDNS *m)
@@ -6357,11 +6403,13 @@ mDNSlocal void SetDomainSecrets_internal(mDNS *m)
             offset = 0;
             if (!strncmp(stringbuf, dnsprefix, strlen(dnsprefix)))
                 offset = strlen(dnsprefix);
+#if MDNSRESPONDER_BTMM_SUPPORT
             else if (!strncmp(stringbuf, btmmprefix, strlen(btmmprefix)))
             {
                 AutoTunnel = mDNStrue;
                 offset = strlen(btmmprefix);
             }
+#endif
             domainname domain;
             if (!MakeDomainNameFromDNSNameString(&domain, stringbuf + offset)) { LogMsg("SetDomainSecrets: bad key domain %s", stringbuf); continue; }
 
@@ -6543,7 +6591,9 @@ mDNSlocal void SetDomainSecrets_internal(mDNS *m)
         }
 
         UpdateAnonymousRacoonConfig(m);     // Determine whether we need racoon to accept incoming connections
+#if MDNSRESPONDER_BTMM_SUPPORT
         ProcessConndConfigChanges();       // Update AutoTunnelInnerAddress values and default ipsec policies as necessary
+#endif
     }
 #endif // APPLE_OSX_mDNSResponder
 
@@ -7224,8 +7274,9 @@ mDNSexport void RemoveAutoTunnel6Record(mDNS *const m)
         if (info->AutoTunnel)
             UpdateAutoTunnel6Record(m, info);
 }
+#endif /* APPLE_OSX_mDNSResponder */
 
-#if !TARGET_OS_EMBEDDED
+#if MDNSRESPONDER_BTMM_SUPPORT
 mDNSlocal mDNSBool IPv6AddressIsOnInterface(mDNSv6Addr ipv6Addr, char *ifname)
 {
     struct ifaddrs  *ifa;
@@ -7462,8 +7513,7 @@ mDNSlocal void ProcessConndConfigChanges(void)
     // If awacsd crashes or exits for some reason, restart it
     UpdateBTMMRelayConnection(m);
 }
-#endif // !TARGET_OS_EMBEDDED
-#endif /* APPLE_OSX_mDNSResponder */
+#endif // MDNSRESPONDER_BTMM_SUPPORT
 
 mDNSlocal mDNSBool IsAppleNetwork(mDNS *const m)
 {
@@ -7568,9 +7618,11 @@ mDNSexport void mDNSMacOSXNetworkChanged(void)
 
 #if APPLE_OSX_mDNSResponder
 #if !TARGET_OS_EMBEDDED
+#if MDNSRESPONDER_BTMM_SUPPORT
     mDNS_Lock(m);
     ProcessConndConfigChanges();
     mDNS_Unlock(m);
+#endif
 
     // Scan to find client tunnels whose questions have completed,
     // but whose local inner/outer addresses have changed since the tunnel was set up
@@ -7794,14 +7846,18 @@ mDNSlocal void NetworkChanged(SCDynamicStoreRef store, CFArrayRef changedKeys, v
     //mDNSs32 delay = mDNSPlatformOneSecond * 2;                // Start off assuming a two-second delay
     const mDNSs32 delay = (mDNSPlatformOneSecond + 39) / 40;	// 25 ms delay
 
-    int c = CFArrayGetCount(changedKeys);                   // Count changes
+    const int c = CFArrayGetCount(changedKeys);                   // Count changes
     CFRange range = { 0, c };
-    int c_host = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_Hostnames   ) != 0);
-    int c_comp = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_Computername) != 0);
-    int c_udns = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_DNS         ) != 0);
-    int c_ddns = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_DynamicDNS  ) != 0);
-    int c_btmm = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_BackToMyMac ) != 0);
-    int c_v4ll = ChangedKeysHaveIPv4LL(changedKeys);
+    const int c_host = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_Hostnames   ) != 0);
+    const int c_comp = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_Computername) != 0);
+    const int c_udns = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_DNS         ) != 0);
+    const int c_ddns = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_DynamicDNS  ) != 0);
+#if MDNSRESPONDER_BTMM_SUPPORT
+    const int c_btmm = (CFArrayContainsValue(changedKeys, range, NetworkChangedKey_BackToMyMac ) != 0);
+#else
+    const int c_btmm = 0;
+#endif
+    const int c_v4ll = ChangedKeysHaveIPv4LL(changedKeys);
     int c_fast = 0;
     
     // Do immediate network changed processing for "p2p*" interfaces and
@@ -7959,9 +8015,11 @@ mDNSlocal mStatus WatchForNetworkChanges(mDNS *const m)
     CFArrayAppendValue(keys, NetworkChangedKey_Computername);
     CFArrayAppendValue(keys, NetworkChangedKey_DNS);
     CFArrayAppendValue(keys, NetworkChangedKey_DynamicDNS);
-    CFArrayAppendValue(keys, NetworkChangedKey_BackToMyMac);
     CFArrayAppendValue(keys, NetworkChangedKey_PowerSettings);
+#if MDNSRESPONDER_BTMM_SUPPORT
+    CFArrayAppendValue(keys, NetworkChangedKey_BackToMyMac);
     CFArrayAppendValue(keys, NetworkChangedKey_BTMMConnectivity);
+#endif
     CFArrayAppendValue(patterns, pattern1);
     CFArrayAppendValue(patterns, pattern2);
     CFArrayAppendValue(patterns, CFSTR("State:/Network/Interface/[^/]+/AirPort"));
@@ -8165,13 +8223,9 @@ mDNSlocal void removeCachedPeerRecords(mDNSu32 ifindex, mDNSAddr *ap, bool purge
 // Handle KEV_DL_NODE_PRESENCE event.
 mDNSlocal void nodePresence(struct kev_dl_node_presence * p)
 {
-    char buf[INET6_ADDRSTRLEN];
     struct opaque_presence_indication *op = (struct opaque_presence_indication *) p->node_service_info;
 
-    if (inet_ntop(AF_INET6, & p->sin6_node_address.sin6_addr, buf, sizeof(buf)))
-        LogInfo("nodePresence:  IPv6 address: %s, SUI %d", buf, op->SUI);
-    else
-        LogInfo("nodePresence:  inet_ntop() error");
+    LogInfo("nodePresence: IPv6 address: %.16a, SUI %d", p->sin6_node_address.sin6_addr.s6_addr, op->SUI);
  
     // AWDL will generate a KEV_DL_NODE_PRESENCE event with SSTH field of
     // all zeroes when a node is present and has no services registered.
@@ -8191,17 +8245,11 @@ mDNSlocal void nodePresence(struct kev_dl_node_presence * p)
 mDNSlocal void nodeAbsence(struct kev_dl_node_absence * p)
 {
     mDNSAddr    peerAddr;
-    char buf[INET6_ADDRSTRLEN];
-
-    if (inet_ntop(AF_INET6, & p->sin6_node_address.sin6_addr, buf, sizeof(buf)))
-        LogInfo("nodeAbsence:  IPv6 address: %s", buf);
-    else
-        LogInfo("nodeAbsence:  inet_ntop() error");
 
     peerAddr.type = mDNSAddrType_IPv6;
     peerAddr.ip.v6 = *(mDNSv6Addr*)&p->sin6_node_address.sin6_addr;
 
-    LogInfo("nodeAbsence: immediately purge cached records from this peer");
+    LogInfo("nodeAbsence: immediately purge cached records from %.16a", p->sin6_node_address.sin6_addr.s6_addr);
     removeCachedPeerRecords(p->sdl_node_address.sdl_index, & peerAddr, true);
 }
 
@@ -8355,8 +8403,13 @@ mDNSlocal OSStatus KeychainChanged(SecKeychainEvent keychainEvent, SecKeychainCa
                 if (!err)
                 {
                     relevant = ((a->attr[0].length == 4 && (!strncasecmp(a->attr[0].data, "ddns", 4) || !strncasecmp(a->attr[0].data, "sndd", 4))) ||
-                                (a->attr[1].length >= mDNSPlatformStrLen(dnsprefix) && (!strncasecmp(a->attr[1].data, dnsprefix, mDNSPlatformStrLen(dnsprefix)))) ||
-                                (a->attr[1].length >= mDNSPlatformStrLen(btmmprefix) && (!strncasecmp(a->attr[1].data, btmmprefix, mDNSPlatformStrLen(btmmprefix)))));
+                                (a->attr[1].length >= mDNSPlatformStrLen(dnsprefix) && (!strncasecmp(a->attr[1].data, dnsprefix, mDNSPlatformStrLen(dnsprefix)))));
+#if MDNSRESPONDER_BTMM_SUPPORT
+                    if (!relevant && (a->attr[1].length >= mDNSPlatformStrLen(btmmprefix)) && !strncasecmp(a->attr[1].data, btmmprefix, mDNSPlatformStrLen(btmmprefix)))
+                    {
+                        relevant = mDNStrue;
+                    }
+#endif
                     SecKeychainItemFreeAttributesAndData(a, NULL);
                 }
             }
@@ -9407,36 +9460,13 @@ mDNSlocal void CreatePTRRecord(const domainname *domain)
 // intentionally to avoid adding to the complexity of code handling /etc/hosts.
 mDNSlocal void SetupLocalHostRecords(void)
 {
-    char buffer[MAX_REVERSE_MAPPING_NAME];
     domainname name;
-    int i;
-    struct in6_addr addr;
-    mDNSu8 *ptr = addr.__u6_addr.__u6_addr8;
 
-    if (inet_pton(AF_INET, "127.0.0.1", &addr) == 1)
-    {
-        mDNS_snprintf(buffer, sizeof(buffer), "%d.%d.%d.%d.in-addr.arpa.",
-                      ptr[3], ptr[2], ptr[1], ptr[0]);
-        MakeDomainNameFromDNSNameString(&name, buffer);
-        CreatePTRRecord(&name);
-    }
-    else LogMsg("SetupLocalHostRecords: ERROR!! inet_pton AF_INET failed");
+    MakeDomainNameFromDNSNameString(&name, "1.0.0.127.in-addr.arpa.");
+    CreatePTRRecord(&name);
 
-    if (inet_pton(AF_INET6, "::1", &addr) == 1)
-    {
-        for (i = 0; i < 16; i++)
-        {
-            static const char hexValues[] = "0123456789ABCDEF";
-            buffer[i * 4    ] = hexValues[ptr[15 - i] & 0x0F];
-            buffer[i * 4 + 1] = '.';
-            buffer[i * 4 + 2] = hexValues[ptr[15 - i] >> 4];
-            buffer[i * 4 + 3] = '.';
-        }
-        mDNS_snprintf(&buffer[64], sizeof(buffer)-64, "ip6.arpa.");
-        MakeDomainNameFromDNSNameString(&name, buffer);
-        CreatePTRRecord(&name);
-    }
-    else LogMsg("SetupLocalHostRecords: ERROR!! inet_pton AF_INET6 failed");
+    MakeDomainNameFromDNSNameString(&name, "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa.");
+    CreatePTRRecord(&name);
 }
 
 #if APPLE_OSX_mDNSResponder // Don't compile for dnsextd target
@@ -9452,6 +9482,56 @@ mDNSlocal void setSameDomainLabelPointer(void);
 // 5) global list delivered to client via GetSearchDomainList()
 // 6) client calls to enumerate domains now go over LocalOnly interface
 //    (!!!KRS may add outgoing interface in addition)
+
+#if TARGET_OS_IPHONE
+mDNSlocal mDNSBool IsAppleInternalBuild(void)
+{
+    return (os_variant_has_internal_diagnostics("com.apple.mDNSResponder") ? mDNStrue : mDNSfalse);
+}
+
+mDNSlocal mStatus RegisterLocalOnlyAddressRecord(const domainname *const name, mDNSu16 type, const void *rdata, mDNSu16 rdlength)
+{
+    switch(type)
+    {
+    case kDNSType_A:
+        if (rdlength != 4) return (mStatus_BadParamErr);
+        break;
+
+    case kDNSType_AAAA:
+        if (rdlength != 16) return (mStatus_BadParamErr);
+        break;
+
+    default:
+        return (mStatus_BadParamErr);
+    }
+
+    AuthRecord *rr = mallocL("etchosts", sizeof(*rr));
+    if (!rr) return (mStatus_NoMemoryErr);
+    mDNSPlatformMemZero(rr, sizeof(*rr));
+
+    mDNS_SetupResourceRecord(rr, NULL, mDNSInterface_LocalOnly, type, 1, kDNSRecordTypeKnownUnique, AuthRecordLocalOnly, FreeEtcHosts, NULL);
+    AssignDomainName(&rr->namestorage, name);
+    mDNSPlatformMemCopy(rr->resrec.rdata->u.data, rdata, rdlength);
+
+    const mStatus err = mDNS_Register_internal(&mDNSStorage, rr);
+    if (err)
+    {
+        LogMsg("RegisterLocalOnlyAddressRecord: mDNS_Register error %d registering %s", err, ARDisplayString(&mDNSStorage, rr));
+        freeL("etchosts", rr);
+    }
+    return (err);
+}
+
+mDNSlocal void RegisterLocalOnlyARecord(const domainname *const name, const mDNSv4Addr *const addr)
+{
+    RegisterLocalOnlyAddressRecord(name, kDNSType_A, addr->b, (mDNSu16)sizeof(mDNSv4Addr));
+}
+
+mDNSlocal void RegisterLocalOnlyAAAARecord(const domainname *const name, const mDNSv6Addr *const addr)
+{
+    RegisterLocalOnlyAddressRecord(name, kDNSType_AAAA, addr->b, (mDNSu16)sizeof(mDNSv6Addr));
+}
+#endif
 
 mDNSlocal mStatus mDNSPlatformInit_setup(mDNS *const m)
 {
@@ -9682,7 +9762,41 @@ mDNSlocal mStatus mDNSPlatformInit_setup(mDNS *const m)
 #endif
     if (SSLqueue == mDNSNULL) LogMsg("dispatch_queue_create: SSL queue NULL");
 
-    mDNSMacOSXUpdateEtcHosts(m);
+#if TARGET_OS_IPHONE
+    // On device OSes (iOS, tvOS, watchOS, etc.), ignore /etc/hosts unless the OS is an internal build. When the /etc/hosts
+    // file is ignored, LocalOnly auth records will be registered for localhost and broadcasthost addresses contained in the
+    // standard /etc/hosts file:
+    //
+    //  127.0.0.1       localhost
+    //  255.255.255.255 broadcasthost
+    //  ::1             localhost
+
+    if (!IsAppleInternalBuild())
+    {
+        const domainname *const localHostName     = (const domainname *) "\x9" "localhost";
+        const domainname *const broadcastHostName = (const domainname *) "\xd" "broadcasthost";
+        const mDNSv4Addr        localHostV4       = { { 127, 0, 0, 1 } };
+        mDNSv6Addr              localHostV6;
+
+        // Register localhost 127.0.0.1 A record.
+
+        RegisterLocalOnlyARecord(localHostName, &localHostV4);
+
+        // Register broadcasthost 255.255.255.255 A record.
+
+        RegisterLocalOnlyARecord(broadcastHostName, &onesIPv4Addr);
+
+        // Register localhost ::1 AAAA record.
+
+        mDNSPlatformMemZero(&localHostV6, sizeof(localHostV6));
+        localHostV6.b[15] = 1;
+        RegisterLocalOnlyAAAARecord(localHostName, &localHostV6);
+    }
+    else
+#endif
+    {
+        mDNSMacOSXUpdateEtcHosts(m);
+    }
     SetupLocalHostRecords();
 
     return(mStatus_NoError);
