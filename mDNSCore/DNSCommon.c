@@ -67,7 +67,7 @@ mDNSexport const mDNSInterfaceID mDNSInterface_BLE       = (mDNSInterfaceID)-6;
 #define   DNSEXTPortAsNumber             5352       // Port used for end-to-end DNS operations like LLQ, Updates with Leases, etc.
 #define   MulticastDNSPortAsNumber       5353
 #define   LoopbackIPCPortAsNumber        5354
-//#define MulticastDNSPortAsNumber       5355		// LLMNR
+#define   MulticastDNSPortAsNumber       5355		// LLMNR
 #define   PrivateDNSPortAsNumber         5533
 
 mDNSexport const mDNSIPPort DiscardPort            = { { DiscardPortAsNumber            >> 8, DiscardPortAsNumber            & 0xFF } };
@@ -100,9 +100,9 @@ mDNSexport const mDNSv6Addr AllHosts_v6        = { { 0xFF,0x02,0x00,0x00, 0x00,0
 mDNSexport const mDNSv6Addr NDP_prefix         = { { 0xFF,0x02,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x01, 0xFF,0x00,0x00,0xFB } };  // FF02:0:0:0:0:1:FF00::/104
 mDNSexport const mDNSEthAddr AllHosts_v6_Eth    = { { 0x33, 0x33, 0x00, 0x00, 0x00, 0x01 } };
 mDNSexport const mDNSAddr AllDNSLinkGroup_v4 = { mDNSAddrType_IPv4, { { { 224,   0,   0, 251 } } } };
-//mDNSexport const mDNSAddr  AllDNSLinkGroup_v4 = { mDNSAddrType_IPv4, { { { 224,   0,   0, 252 } } } }; // LLMNR
+mDNSexport const mDNSAddr  AllDNSLinkGroup_v4 = { mDNSAddrType_IPv4, { { { 224,   0,   0, 252 } } } }; // LLMNR
 mDNSexport const mDNSAddr AllDNSLinkGroup_v6 = { mDNSAddrType_IPv6, { { { 0xFF,0x02,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0xFB } } } };
-//mDNSexport const mDNSAddr  AllDNSLinkGroup_v6 = { mDNSAddrType_IPv6, { { { 0xFF,0x02,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x01,0x00,0x03 } } } }; // LLMNR
+mDNSexport const mDNSAddr  AllDNSLinkGroup_v6 = { mDNSAddrType_IPv6, { { { 0xFF,0x02,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00, 0x00,0x01,0x00,0x03 } } } }; // LLMNR
 
 mDNSexport const mDNSOpaque16 zeroID          = { { 0, 0 } };
 mDNSexport const mDNSOpaque16 onesID          = { { 255, 255 } };
