@@ -96,7 +96,7 @@
 /*
     Count the number of dots in a name string.
  */
-int
+static int
 count_dots (const char * name);
 
 
@@ -107,7 +107,7 @@ count_dots (const char * name);
         1 if name ends with ".local" or ".local."
         0 otherwise
  */
-int
+static int
 islocal (const char * name);
 
 
@@ -126,7 +126,7 @@ islocal (const char * name);
         Pointer to (first character of) output buffer,
         or NULL on error.
  */
-char *
+static char *
 format_reverse_addr (int af, const void * addr, int prefixlen, char * buf);
 
 
@@ -145,7 +145,7 @@ format_reverse_addr (int af, const void * addr, int prefixlen, char * buf);
         Pointer to (first character of) output buffer,
         or NULL on error.
  */
-char *
+static char *
 format_reverse_addr_in (
     const struct in_addr * addr,
     int prefixlen,
@@ -168,7 +168,7 @@ format_reverse_addr_in (
         Pointer to (first character of) output buffer,
         or NULL on error.
  */
-char *
+static char *
 format_reverse_addr_in6 (
     const struct in6_addr * addr,
     int prefixlen,
@@ -189,7 +189,7 @@ format_reverse_addr_in6 (
         0 on failure (no match)
         < 0 on error
  */
-int
+static int
 cmp_dns_suffix (const char * name, const char * domain);
 enum
 {
@@ -213,7 +213,7 @@ typedef int ns_class_t;
         Appropriate AF code (from socket.h), or AF_UNSPEC if an appropriate
         mapping couldn't be determined
  */
-int
+static int
 rr_to_af (ns_type_t rrtype);
 
 
@@ -227,7 +227,7 @@ rr_to_af (ns_type_t rrtype);
         Appropriate RR code (from nameser.h), or ns_t_invalid if an appropriate
         mapping couldn't be determined
  */
-ns_type_t
+static ns_type_t
 af_to_rr (int af);
 
 
@@ -237,7 +237,7 @@ af_to_rr (int af);
     Returns
         Matching AF code, or AF_UNSPEC if no match found.
  */
-int
+static int
 str_to_af (const char * str);
 
 
@@ -247,7 +247,7 @@ str_to_af (const char * str);
     Returns
         Matching ns_class_t, or ns_c_invalid if no match found.
  */
-ns_class_t
+static ns_class_t
 str_to_ns_class (const char * str);
 
 
@@ -359,7 +359,7 @@ typedef int errcode_t;
          0 failure
         -1 error, check errno
  */
-int
+static int
 config_is_mdns_suffix (const char * name);
 
 
@@ -373,7 +373,7 @@ config_is_mdns_suffix (const char * name);
         0 configuration ready
         non-zero configuration error code
  */
-errcode_t
+static errcode_t
 init_config ();
 
 #define ENTNAME  hostent
@@ -1800,7 +1800,7 @@ pthread_mutex_t g_config_mutex =
         0 success
         non-zero error code on failure
  */
-errcode_t
+static errcode_t
 init_config ()
 {
     if (g_config)
@@ -1873,7 +1873,7 @@ init_config ()
 }
 
 
-int
+static int
 config_is_mdns_suffix (const char * name)
 {
     int errcode = init_config ();
@@ -2258,7 +2258,7 @@ table_index_value (const table_entry_t table [], int size, int n);
 //----------
 // Util functions
 
-int
+static int
 count_dots (const char * name)
 {
     int count = 0;
@@ -2273,14 +2273,14 @@ count_dots (const char * name)
 }
 
 
-int
+static int
 islocal (const char * name)
 {
     return cmp_dns_suffix (name, k_local_suffix) > 0;
 }
 
 
-int
+static int
 rr_to_af (ns_type_t rrtype)
 {
     switch (rrtype)
@@ -2297,7 +2297,7 @@ rr_to_af (ns_type_t rrtype)
 }
 
 
-ns_type_t
+static ns_type_t
 af_to_rr (int af)
 {
     switch (af)
@@ -2315,7 +2315,7 @@ af_to_rr (int af)
 }
 
 
-int
+static int
 str_to_af (const char * str)
 {
     int result =
@@ -2327,7 +2327,7 @@ str_to_af (const char * str)
 }
 
 
-ns_class_t
+static ns_class_t
 str_to_ns_class (const char * str)
 {
     return (ns_class_t)
@@ -2335,7 +2335,7 @@ str_to_ns_class (const char * str)
 }
 
 
-ns_type_t
+static ns_type_t
 str_to_ns_type (const char * str)
 {
     return (ns_type_t)
@@ -2343,7 +2343,7 @@ str_to_ns_type (const char * str)
 }
 
 
-const char *
+static const char *
 af_to_str (int in)
 {
     int result =
@@ -2355,7 +2355,7 @@ af_to_str (int in)
 }
 
 
-const char *
+static const char *
 ns_class_to_str (ns_class_t in)
 {
     if (in < k_table_ns_class_size)
@@ -2365,7 +2365,7 @@ ns_class_to_str (ns_class_t in)
 }
 
 
-const char *
+static const char *
 ns_type_to_str (ns_type_t in)
 {
     if (in < k_table_ns_type_size)
@@ -2375,7 +2375,7 @@ ns_type_to_str (ns_type_t in)
 }
 
 
-char *
+static char *
 format_reverse_addr_in (
     const struct in_addr * addr,
     int prefixlen,
@@ -2406,7 +2406,7 @@ format_reverse_addr_in (
 }
 
 
-char *
+static char *
 format_reverse_addr_in6 (
     const struct in6_addr * addr,
     int prefixlen,
@@ -2448,7 +2448,7 @@ format_reverse_addr_in6 (
 }
 
 
-char *
+static char *
 format_reverse_addr (
     int af,
     const void * addr,
@@ -2478,7 +2478,7 @@ format_reverse_addr (
 }
 
 
-int
+static int
 cmp_dns_suffix (const char * name, const char * domain)
 {
     const char * nametail;
