@@ -257,7 +257,7 @@ str_to_ns_class (const char * str);
     Returns
         Matching ns_type_t, or ns_t_invalid if no match found.
  */
-ns_type_t
+static ns_type_t
 str_to_ns_type (const char * str);
 
 
@@ -268,7 +268,7 @@ str_to_ns_type (const char * str);
         String representation of AF,
         or NULL if address family unrecognised or invalid.
  */
-const char *
+static const char *
 af_to_str (int in);
 
 
@@ -279,7 +279,7 @@ af_to_str (int in);
         String representation of ns_class_t,
         or NULL if ns_class_t unrecognised or invalid.
  */
-const char *
+static const char *
 ns_class_to_str (ns_class_t in);
 
 
@@ -290,7 +290,7 @@ ns_class_to_str (ns_class_t in);
         String representation of ns_type_t,
         or NULL if ns_type_t unrecognised or invalid.
  */
-const char *
+static const char *
 ns_type_to_str (ns_type_t in);
 
 
