@@ -493,7 +493,7 @@ _nss_mdns_gethostbyaddr_r (
 //----------
 // Types and Constants
 
-const int MDNS_VERBOSE = 0;
+static const int MDNS_VERBOSE = 0;
 // This enables verbose syslog messages
 // If zero, only "imporant" messages will appear in syslog
 
@@ -1695,14 +1695,14 @@ is_applicable_addr (
 //----------
 // Types and Constants
 
-const char * k_conf_file = PREFIX"/etc/nss_mdns.conf";
+static const char * k_conf_file = PREFIX"/etc/nss_mdns.conf";
 #define CONF_LINE_SIZE 1024
 
-const char k_comment_char = '#';
+static const char k_comment_char = '#';
 
-const char * k_keyword_domain = "domain";
+static const char * k_keyword_domain = "domain";
 
-const char * k_default_domains [] =
+static const char * k_default_domains [] =
 {
     "local",
     "254.169.in-addr.arpa",
@@ -1732,7 +1732,7 @@ typedef struct
     domain_entry_t * domains;
 } config_t;
 
-const config_t k_empty_config =
+static const config_t k_empty_config =
 {
     NULL
 };
@@ -1781,7 +1781,7 @@ contains_domain_suffix (const config_t * conf, const char * addr);
 static config_t * g_config = NULL;
 // Configuration info
 
-pthread_mutex_t g_config_mutex =
+static pthread_mutex_t g_config_mutex =
 #ifdef PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP
     PTHREAD_ERRORCHECK_MUTEX_INITIALIZER_NP;
 #else
