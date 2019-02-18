@@ -493,7 +493,7 @@ _nss_mdns_gethostbyaddr_r (
 //----------
 // Types and Constants
 
-const int MDNS_VERBOSE = 0;
+static const int MDNS_VERBOSE = 0;
 // This enables verbose syslog messages
 // If zero, only "imporant" messages will appear in syslog
 
@@ -1732,7 +1732,7 @@ typedef struct
     domain_entry_t * domains;
 } config_t;
 
-const config_t k_empty_config =
+static const config_t k_empty_config =
 {
     NULL
 };
